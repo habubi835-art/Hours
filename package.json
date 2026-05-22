@@ -1,0 +1,13 @@
+{
+  "name": "node-runtime-env",
+  "version": "1.0.0",
+  "main": "app.js",
+  "dependencies": {
+    "express": "^4.19.2",
+    "steam-user": "^4.28.0",
+    "steam-totp": "^2.1.2"
+  },
+  "scripts": {
+    "start": "node app.js"
+  }
+}
