@@ -5,13 +5,15 @@ const SteamTotp = require('steam-totp');
 
 const client = new SteamUser();
 
-// 👇 RIGHT HERE: Change 730 to whatever game ID you want. 
-// You can add more separated by commas, like [730, 440, 570]
-const GAMES_TO_IDLE = [252950]; 
+const GAMES_TO_IDLE = [252950]; // Rocket League
+let isUserPlayingOnPC = false;
 
-// --- The rest of the spoofed code remains below ---
 app.get('/', (req, res) => {
-    res.json({ status: "healthy", worker: "active", engine: "v1.0.2" });
+    res.json({ 
+        status: "healthy", 
+        bot_farming: client.steamID ? "ACTIVE" : "OFFLINE/STANDBY",
+        user_on_pc: isUserPlayingOnPC 
+    });
 });
 
 const PORT = process.env.PORT || 10000;
@@ -20,11 +22,17 @@ app.listen(PORT, '0.0.0.0', () => {
 });
 
 function initSteamSync() {
-    // Spoofing: Generates a random delay between 30 and 75 seconds before hitting Steam
+    if (isUserPlayingOnPC) {
+        console.log('Standby active: User is still on PC. Handshake skipped.');
+        return;
+    }
+
     const randomDelay = Math.floor(Math.random() * (75000 - 30000 + 1)) + 30000;
-    console.log(`Delaying handshake for ${randomDelay / 1000}s to clear firewall verification...`);
+    console.log(`Delaying handshake for ${randomDelay / 1000}s to clear verification...`);
     
     setTimeout(() => {
+        if (isUserPlayingOnPC) return; // Final fallback check
+        
         console.log('Initiating secure backend handshake...');
         const logInOptions = {
             accountName: process.env.STEAM_USERNAME,
@@ -39,15 +47,39 @@ function initSteamSync() {
 }
 
 client.on('loggedOn', () => {
-    console.log('Steam sync successful!');
+    console.log('Steam sync successful! Bot is online.');
+    isUserPlayingOnPC = false;
     client.setPersona(SteamUser.EPersonaState.Invisible); 
     client.gamesPlayed(GAMES_TO_IDLE);
     console.log(`Hours are now rolling for games: ${GAMES_TO_IDLE.join(', ')}`);
 });
 
+// 🛑 DETECTING YOUR PC SESSION: Triggers when you launch a game on your computer
 client.on('error', (err) => {
-    console.error('Session deferred:', err.message);
-    setTimeout(initSteamSync, 1000 * 60 * 45); 
+    if (err.message.includes('Logged in elsewhere') || err.eresult === SteamUser.EResult.LoggedInElsewhere) {
+        console.log('⚠️ DETECTED ACTIVITY: You started playing on your PC! Bot entering Standby Mode...');
+        isUserPlayingOnPC = true;
+        
+        // Disconnect immediately so your PC session has 100% priority
+        client.logOff(); 
+
+        // Set up a background loop to check every 15 minutes if you have closed your game
+        const checkStatusInterval = setInterval(() => {
+            if (!isUserPlayingOnPC) {
+                clearInterval(checkStatusInterval);
+                return;
+            }
+            
+            console.log('Checking if PC gameplay has finished...');
+            // Attempt a brief logon state check. If it succeeds, you're off the PC.
+            isUserPlayingOnPC = false; 
+            initSteamSync();
+        }, 1000 * 60 * 15); // 15-minute check loops
+        
+    } else {
+        console.error('Session deferred due to alternative error:', err.message);
+        setTimeout(initSteamSync, 1000 * 60 * 45); 
+    }
 });
 
 initSteamSync();
