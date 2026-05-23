@@ -51,7 +51,7 @@ function initSteamSync() {
 client.on('loggedOn', () => {
     console.log('Steam sync successful! Bot has reclaimed farming state.');
     isStandbyActive = false;
-    client.setPersona(SteamUser.EPersonaState.Invisible); 
+    client.setPersona(SteamUser.EPersonaState.Online); 
     client.gamesPlayed(GAMES_TO_IDLE);
     console.log(`Hours are actively rolling for games: ${GAMES_TO_IDLE.join(', ')}`);
 });
