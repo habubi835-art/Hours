@@ -5,7 +5,7 @@ const SteamTotp = require('steam-totp');
 
 const client = new SteamUser();
 
-const GAMES_TO_IDLE = [252950]; // Rocket League
+const GAMES_TO_IDLE = [252950, 559650]; // Rocket League, Witch it
 let isStandbyActive = false;
 let retryTimeoutReference = null;
 
