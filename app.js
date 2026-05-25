@@ -5,9 +5,14 @@ const SteamTotp = require('steam-totp');
 
 const client = new SteamUser();
 
-const GAMES_TO_IDLE = [252950, 559650]; // Rocket League, Witch it
+const GAMES_TO_IDLE = [252950, 559650];
+
 let isStandbyActive = false;
 let retryTimeoutReference = null;
+
+// 🔴 NEU: RateLimit Handling
+let rateLimitUntil = 0;
+let retryDelay = 30; // Startwert in Sekunden
 
 app.get('/', (req, res) => {
     res.json({ 
@@ -22,55 +27,116 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server listening on port ${PORT}`);
 });
 
-function initSteamSync() {
-    // Clear any pending timeouts to prevent overlapping login loops
+// 🔧 Hilfsfunktion für Login
+function attemptLogin() {
+    const now = Date.now();
+
+    // 🔴 RateLimit aktiv → warten
+    if (now < rateLimitUntil) {
+        const remaining = Math.ceil((rateLimitUntil - now) / 1000);
+        console.log(`⏳ Still rate limited. Waiting ${remaining}s...`);
+        initSteamSync(remaining * 1000);
+        return;
+    }
+
+    console.log('Initiating backend handshake...');
+
+    const logInOptions = {
+        accountName: process.env.STEAM_USERNAME,
+        password: process.env.STEAM_PASSWORD
+    };
+
+    if (process.env.STEAM_SHARED_SECRET) {
+        logInOptions.twoFactorCode = SteamTotp.generateAuthCode(process.env.STEAM_SHARED_SECRET);
+    }
+
+    client.logOn(logInOptions);
+}
+
+function initSteamSync(customDelay = null) {
     if (retryTimeoutReference) clearTimeout(retryTimeoutReference);
 
-    // If you are on your PC, we check back rapidly (every 30 seconds) 
-    // This allows the bot to reclaim the account the moment you close your game.
-    const delay = isStandbyActive ? 30000 : (Math.floor(Math.random() * (45000 - 20000 + 1)) + 20000);
-    
-    console.log(`Scheduling login attempt in ${delay / 1000} seconds...`);
-    
-    retryTimeoutReference = setTimeout(() => {
-        console.log('Initiating backend handshake...');
-        
-        const logInOptions = {
-            accountName: process.env.STEAM_USERNAME,
-            password: process.env.STEAM_PASSWORD
-        };
+    let delay;
 
-        if (process.env.STEAM_SHARED_SECRET) {
-            logInOptions.twoFactorCode = SteamTotp.generateAuthCode(process.env.STEAM_SHARED_SECRET);
-        }
-        
-        client.logOn(logInOptions);
+    if (customDelay) {
+        delay = customDelay;
+    } else {
+        delay = isStandbyActive
+            ? 30000
+            : (Math.floor(Math.random() * (45000 - 20000 + 1)) + 20000);
+    }
+
+    console.log(`Scheduling login attempt in ${Math.ceil(delay / 1000)} seconds...`);
+
+    retryTimeoutReference = setTimeout(() => {
+        attemptLogin();
     }, delay);
 }
 
 client.on('loggedOn', () => {
     console.log('Steam sync successful! Bot has reclaimed farming state.');
+
     isStandbyActive = false;
+
+    // 🔴 Reset RateLimit + Backoff
+    rateLimitUntil = 0;
+    retryDelay = 30;
+
     client.setPersona(SteamUser.EPersonaState.Invisible); 
     client.gamesPlayed(GAMES_TO_IDLE);
+
     console.log(`Hours are actively rolling for games: ${GAMES_TO_IDLE.join(', ')}`);
 });
 
 client.on('error', (err) => {
     console.log(`Handshake update: ${err.message}`);
-    
-    // Check if the error is caused by your PC session kicking the bot offline
-    if (err.message.includes('Logged in elsewhere') || err.eresult === SteamUser.EResult.LoggedInElsewhere) {
+
+    // 🔴 LoggedInElsewhere
+    if (
+        err.message.includes('Logged in elsewhere') ||
+        err.eresult === SteamUser.EResult.LoggedInElsewhere
+    ) {
         console.log('⚠️ PC gameplay session active. Bot yielding priority.');
+
         isStandbyActive = true;
-        initSteamSync(); // Trigger the rapid 30-second checking loop
-    } else {
-        // For general network or rate limit errors, default to a safer 30-minute fallback delay
-        isStandbyActive = false;
-        if (retryTimeoutReference) clearTimeout(retryTimeoutReference);
-        retryTimeoutReference = setTimeout(initSteamSync, 1000 * 60 * 30);
+
+        // Kein aggressives reconnect → normal weiter
+        initSteamSync();
+        return;
     }
+
+    // 🔴 RateLimit Handling
+    if (
+        err.message.includes('RateLimitExceeded') ||
+        err.eresult === SteamUser.EResult.RateLimitExceeded
+    ) {
+        const now = Date.now();
+
+        // Exponential Backoff (max 5 Minuten)
+        retryDelay = Math.min(Math.floor(retryDelay * 1.5), 300);
+
+        rateLimitUntil = now + retryDelay * 1000;
+
+        const retryDate = new Date(rateLimitUntil);
+
+        console.log('⚠️ RateLimitExceeded');
+        console.log(`⏳ Backoff: ${retryDelay} seconds`);
+        console.log(`🕒 Retry at: ${retryDate.toLocaleTimeString()}`);
+
+        initSteamSync(retryDelay * 1000);
+        return;
+    }
+
+    // 🔴 Sonstige Fehler → konservativ warten
+    console.log('⚠️ Unknown error → fallback 5 minutes');
+
+    isStandbyActive = false;
+
+    retryDelay = 300;
+    rateLimitUntil = Date.now() + retryDelay * 1000;
+
+    initSteamSync(retryDelay * 1000);
 });
 
-// Start the core process execution
+// Start
 initSteamSync();
